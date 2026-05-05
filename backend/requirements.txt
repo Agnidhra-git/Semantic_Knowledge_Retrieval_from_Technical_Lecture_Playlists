@@ -1,0 +1,15 @@
+fastapi==0.111.0
+uvicorn==0.29.0
+python-dotenv==1.0.1
+pydantic-settings==2.2.1
+# supabase 2.9.1 works with the anon JWT key; 2.4.2 is too old for realtime-2.x
+supabase==2.9.1
+pinecone-client==3.2.2
+# Generation via SDK (gemini-2.0-flash); embeddings via direct REST (gemini-embedding-001)
+google-generativeai==0.8.6
+youtube-transcript-api==1.2.4
+browser-cookie3>=0.19.1   # auto-extract YouTube cookies from Chrome/Firefox to bypass IP blocks
+requests==2.31.0
+httpx==0.27.0
+websockets>=13.0
+python-multipart==0.0.9
