@@ -52,6 +52,10 @@ create table transcript_chunks (
   concept_depth_score   float default 0,       -- 0–1, LLM-assessed
   term_density_score    float default 0,       -- domain term density
   centrality_score      float default 0,       -- concept centrality
+  -- Sentence-level boundaries for precise timestamp extraction
+  sentence_boundaries   jsonb default '[]'::jsonb, -- [{text, start, end}, ...]
+  -- Extracted equations (LaTeX format)
+  equations            text[] default '{}',   -- Array of LaTeX equations
   -- Pinecone vector ID (for retrieval)
   pinecone_id      text unique,
   created_at       timestamptz default now()
@@ -131,3 +135,16 @@ create table search_cache (
   expires_at       timestamptz default (now() + interval '7 days'),
   created_at       timestamptz default now()
 );
+
+-- ─── Concept dependencies (prerequisite discovery) ─────────────────────────────
+create table concept_dependencies (
+  id               uuid primary key default uuid_generate_v4(),
+  playlist_id      uuid references playlists(id) on delete cascade,
+  prerequisite_term text not null,
+  dependent_term    text not null,
+  confidence       float default 0.5,          -- 0–1 based on co-occurrence strength
+  created_at       timestamptz default now(),
+  unique(playlist_id, prerequisite_term, dependent_term)
+);
+create index on concept_dependencies(playlist_id);
+create index on concept_dependencies(dependent_term);

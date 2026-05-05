@@ -85,6 +85,50 @@ def generate_relevance_reason(query: str, chunk_text: str, role: str) -> str:
         return f"Relevant {role} passage about the queried concept."
 
 
+def _find_best_sentence(
+    query: str, sentence_boundaries: list[dict], chunk_start: float
+) -> tuple[float, float]:
+    """
+    Find the best 30s window within a chunk based on keyword matching.
+    
+    Args:
+        query: Search query
+        sentence_boundaries: List of {text, start, end} dicts
+        chunk_start: Chunk's start time (fallback)
+    
+    Returns:
+        (recommended_start, recommended_end) in seconds
+    """
+    if not sentence_boundaries:
+        return (chunk_start, chunk_start + 30)
+    
+    # Extract query keywords (simple word extraction)
+    query_words = set(query.lower().split())
+    
+    # Score each sentence by keyword overlap
+    best_score = -1
+    best_sentence = sentence_boundaries[0]
+    
+    for sent in sentence_boundaries:
+        sent_text = sent.get("text", "").lower()
+        sent_words = set(sent_text.split())
+        overlap = len(query_words & sent_words)
+        
+        if overlap > best_score:
+            best_score = overlap
+            best_sentence = sent
+    
+    # Return 30s window around best sentence
+    sent_start = best_sentence.get("start", chunk_start)
+    sent_end = best_sentence.get("end", chunk_start + 30)
+    
+    # Ensure at least 15s window
+    if sent_end - sent_start < 15:
+        sent_end = sent_start + 30
+    
+    return (sent_start, min(sent_end, sent_start + 30))
+
+
 def _rerank_score(
     cosine_sim: float,
     chunk_meta: dict,
@@ -215,14 +259,14 @@ def semantic_search(
     if not matches:
         return []
 
-    # 3. Fetch full chunks from Supabase
+    # 3. Fetch full chunks from Supabase (including sentence boundaries)
     supabase = get_supabase()
     chunk_ids = [m["id"] for m in matches]
     chunks_resp = (
         supabase.table("transcript_chunks")
         .select(
             "id, video_id, playlist_id, text, start_time, end_time,"
-            " pedagogy_role, concept_depth_score, centrality_score, pinecone_id"
+            " pedagogy_role, concept_depth_score, centrality_score, pinecone_id, sentence_boundaries"
         )
         .in_("pinecone_id", chunk_ids)
         .execute()
@@ -305,14 +349,24 @@ def semantic_search(
     scored.sort(key=lambda x: x[0], reverse=True)
     top_matches = scored[:top_k]
 
-    # 6. Build results with relevance reasons (one Gemini call per result)
+    # 8. Build results with relevance reasons and precise timestamps
     results: list[dict] = []
     for final_score, chunk, _match in top_matches:
         video = video_map.get(chunk["video_id"], {})
         youtube_id = video.get("youtube_id", "")
-        ts = int(chunk.get("start_time", 0))
-        youtube_url = f"https://www.youtube.com/watch?v={youtube_id}&t={ts}s" if youtube_id else ""
+        chunk_start = chunk.get("start_time", 0)
+        chunk_end = chunk.get("end_time", chunk_start + 120)
         role = chunk.get("pedagogy_role", "explanation")
+        
+        # Find best sentence within chunk for precise timestamp
+        sentence_boundaries = chunk.get("sentence_boundaries", [])
+        recommended_start, recommended_end = _find_best_sentence(
+            query, sentence_boundaries, chunk_start
+        )
+        
+        # Build YouTube URL with recommended timestamp
+        ts = int(recommended_start)
+        youtube_url = f"https://www.youtube.com/watch?v={youtube_id}&t={ts}s" if youtube_id else ""
         reason = generate_relevance_reason(query, chunk.get("text", ""), role)
 
         results.append(
@@ -320,7 +374,11 @@ def semantic_search(
                 "video_id": chunk["video_id"],
                 "video_title": video.get("title", ""),
                 "playlist_id": chunk["playlist_id"],
-                "timestamp_seconds": ts,
+                "timestamp_seconds": ts,  # Precise timestamp
+                "recommended_start": int(recommended_start),
+                "recommended_end": int(recommended_end),
+                "full_chunk_start": int(chunk_start),
+                "full_chunk_end": int(chunk_end),
                 "youtube_url": youtube_url,
                 "snippet_text": chunk.get("text", "")[:500],
                 "pedagogy_role": role,

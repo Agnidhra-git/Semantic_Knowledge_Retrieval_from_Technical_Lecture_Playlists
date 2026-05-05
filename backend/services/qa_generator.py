@@ -64,6 +64,12 @@ def _parse_json_response(raw: str) -> dict:
 
 
 def _depth_to_difficulty(depth_score: float) -> str:
+    """Map concept depth score to difficulty level.
+    
+    - basic (< 0.4): Definitions, terminology, conceptual understanding
+    - intermediate (0.4-0.7): Analysis, problem-solving, derivations
+    - advanced (>= 0.7): Synthesis, design, complex multi-step problems
+    """
     if depth_score >= 0.7:
         return "advanced"
     if depth_score >= 0.4:
@@ -71,17 +77,105 @@ def _depth_to_difficulty(depth_score: float) -> str:
     return "basic"
 
 
-def _generate_single_qa(chunk: dict) -> dict | None:
+def _get_playlist_context(playlist_id: str) -> dict:
+    """Fetch playlist metadata and glossary terms for context-aware QA generation."""
+    supabase = get_supabase()
+    
+    # Get playlist info
+    playlist_resp = (
+        supabase.table("playlists")
+        .select("title, subject, description")
+        .eq("id", playlist_id)
+        .maybe_single()
+        .execute()
+    )
+    
+    if not playlist_resp.data:
+        return {"title": "Engineering Course", "subject": "Engineering", "terms": []}
+    
+    playlist = playlist_resp.data
+    
+    # Get top glossary terms
+    glossary_resp = (
+        supabase.table("glossary")
+        .select("term")
+        .eq("playlist_id", playlist_id)
+        .order("importance_score", desc=True)
+        .limit(20)
+        .execute()
+    )
+    
+    terms = [g["term"] for g in (glossary_resp.data or [])]
+    
+    return {
+        "title": playlist.get("title", "Engineering Course"),
+        "subject": playlist.get("subject", "Engineering"),
+        "description": playlist.get("description", ""),
+        "terms": terms,
+    }
+
+
+def _get_chunk_glossary_terms(chunk_text: str, all_terms: list[str]) -> list[str]:
+    """Find glossary terms that appear in this chunk."""
+    text_lower = chunk_text.lower()
+    return [term for term in all_terms if term.lower() in text_lower][:5]
+
+
+def _generate_single_qa(chunk: dict, context: dict) -> dict | None:
+    """Generate a detailed engineering question from a single transcript chunk."""
     depth = float(chunk.get("concept_depth_score", 0.5))
     difficulty = _depth_to_difficulty(depth)
+    pedagogy_role = chunk.get("pedagogy_role", "explanation")
+    
+    # Get relevant glossary terms
+    chunk_terms = _get_chunk_glossary_terms(chunk.get("text", ""), context.get("terms", []))
+    terms_context = f"Key concepts: {', '.join(chunk_terms)}" if chunk_terms else ""
+    
+    # Difficulty-specific guidelines
+    difficulty_guides = {
+        "basic": (
+            "- Focus on definitions, terminology, and fundamental concepts\n"
+            "- Test conceptual understanding rather than calculations\n"
+            "- Ask about physical meaning and significance\n"
+            "- Example: 'Define [concept] and explain its importance in [context]'"
+        ),
+        "intermediate": (
+            "- Require analysis, problem-solving, or quantitative reasoning\n"
+            "- Connect multiple concepts or apply theory to scenarios\n"
+            "- May involve calculations, comparisons, or derivations\n"
+            "- Example: 'How does [parameter] affect [outcome]? Explain using relevant equations.'"
+        ),
+        "advanced": (
+            "- Demand synthesis, design thinking, or multi-step problem-solving\n"
+            "- Require critical evaluation or justification of approaches\n"
+            "- May involve open-ended engineering design or optimization\n"
+            "- Example: 'Design [system] considering [constraints]. Justify your choices.'"
+        ),
+    }
+    
     prompt = (
-        "Generate one technical question and a detailed answer from this "
-        f"aerospace lecture transcript chunk.\n"
-        f"Question should require understanding, not just recall.\n"
-        f"Difficulty: {difficulty}\n\n"
-        f"TRANSCRIPT CHUNK:\n{chunk.get('text', '')[:2000]}\n\n"
-        'Return ONLY valid JSON in the form: {"question": "...", "answer": "...", "difficulty": "..."}'
+        f"You are generating a practice question for an engineering course titled '{context['title']}' "
+        f"(Subject: {context['subject']}).\n\n"
+        f"DIFFICULTY LEVEL: {difficulty.upper()}\n"
+        f"{difficulty_guides.get(difficulty, '')}\n\n"
+        f"LECTURE CONTEXT:\n"
+        f"This is a {pedagogy_role} segment from the course.\n"
+        f"{terms_context}\n\n"
+        f"TRANSCRIPT EXCERPT:\n{chunk.get('text', '')[:2000]}\n\n"
+        f"TASK: Generate ONE engineering question that:\n"
+        f"1. Tests deep understanding, not just memorization\n"
+        f"2. Uses appropriate technical terminology from {context['subject']}\n"
+        f"3. Is appropriate for {difficulty}-level engineering students\n"
+        f"4. References specific concepts from the transcript\n\n"
+        f"Provide a DETAILED answer that:\n"
+        f"- Explains the reasoning step-by-step\n"
+        f"- Includes relevant equations, principles, or derivations when appropriate\n"
+        f"- Uses proper engineering notation and units\n"
+        f"- Connects to broader course concepts\n"
+        f"- Is 3-5 sentences for basic, 5-8 sentences for intermediate, 8-12 sentences for advanced\n\n"
+        'Return ONLY valid JSON: {"question": "...", "answer": "...", "difficulty": "basic|intermediate|advanced"}'
     )
+    
     try:
         raw = _call_gemini_with_retry(prompt)
         parsed = _parse_json_response(raw)
@@ -96,26 +190,49 @@ def _generate_single_qa(chunk: dict) -> dict | None:
     return None
 
 
-def _generate_cross_video_qa(chunk_a: dict, chunk_b: dict) -> dict | None:
+def _generate_cross_video_qa(chunk_a: dict, chunk_b: dict, context: dict, shared_terms: list[str]) -> dict | None:
+    """Generate a question that connects concepts across two lecture segments."""
+    depth = (
+        float(chunk_a.get("concept_depth_score", 0.5))
+        + float(chunk_b.get("concept_depth_score", 0.5))
+    ) / 2
+    difficulty = _depth_to_difficulty(depth)
+    
+    terms_str = ", ".join(shared_terms[:3]) if shared_terms else "related concepts"
+    
     prompt = (
-        "Generate a question that requires understanding from BOTH of these "
-        "aerospace lecture segments, and write a synthesised answer.\n\n"
+        f"You are generating a SYNTHESIS question for '{context['title']}' ({context['subject']}).\n\n"
+        f"This question must connect concepts from TWO different lecture segments.\n"
+        f"Common concepts: {terms_str}\n"
+        f"Difficulty: {difficulty}\n\n"
         f"SEGMENT 1:\n{chunk_a.get('text', '')[:1500]}\n\n"
         f"SEGMENT 2:\n{chunk_b.get('text', '')[:1500]}\n\n"
-        'Return ONLY valid JSON: {"question": "...", "answer": "...", "difficulty": "..."}'
+        f"TASK: Generate a question that:\n"
+        f"1. REQUIRES understanding from BOTH segments to answer completely\n"
+        f"2. Highlights relationships, connections, or contrasts between the concepts\n"
+        f"3. Tests ability to synthesize information across topics\n"
+        f"4. Is appropriate for {difficulty}-level engineering students\n\n"
+        f"Examples of good cross-video questions:\n"
+        f"- 'How does [concept from segment 1] relate to [concept from segment 2]? Explain their interaction.'\n"
+        f"- 'Compare and contrast [approach 1] with [approach 2]. When would each be preferred?'\n"
+        f"- 'Using principles from both [topic 1] and [topic 2], analyze [scenario].'\n\n"
+        f"Provide a COMPREHENSIVE answer that:\n"
+        f"- Explicitly references both segments\n"
+        f"- Synthesizes information to show connections\n"
+        f"- Explains the relationship between concepts\n"
+        f"- Uses proper technical terminology\n"
+        f"- Is 8-15 sentences with detailed reasoning\n\n"
+        'Return ONLY valid JSON: {"question": "...", "answer": "...", "difficulty": "basic|intermediate|advanced"}'
     )
+    
     try:
         raw = _call_gemini_with_retry(prompt)
         parsed = _parse_json_response(raw)
         if parsed.get("question") and parsed.get("answer"):
-            depth = (
-                float(chunk_a.get("concept_depth_score", 0.5))
-                + float(chunk_b.get("concept_depth_score", 0.5))
-            ) / 2
             return {
                 "question": parsed["question"],
                 "answer": parsed["answer"],
-                "difficulty": parsed.get("difficulty", _depth_to_difficulty(depth)),
+                "difficulty": parsed.get("difficulty", difficulty),
             }
     except Exception as exc:
         logger.warning("Cross-video QA generation failed: %s", exc)
@@ -125,6 +242,10 @@ def _generate_cross_video_qa(chunk_a: dict, chunk_b: dict) -> dict | None:
 def generate_qa_pairs(playlist_id: str, n_pairs: int = 50) -> None:
     """Generate and upsert QA pairs for a playlist."""
     supabase = get_supabase()
+    
+    # Fetch playlist context for enhanced prompts
+    context = _get_playlist_context(playlist_id)
+    logger.info("Generating QA for '%s' (%s)", context['title'], context['subject'])
 
     # Fetch all videos
     videos_resp = (
@@ -203,8 +324,9 @@ def generate_qa_pairs(playlist_id: str, n_pairs: int = 50) -> None:
     qa_rows: list[dict] = []
 
     # ── Single-video QA ───────────────────────────────────────────────────────
+    logger.info("Generating %d single-video questions...", n_single)
     for chunk in selected_chunks[:n_single]:
-        qa = _generate_single_qa(chunk)
+        qa = _generate_single_qa(chunk, context)
         if qa:
             qa_rows.append(
                 {
@@ -219,8 +341,17 @@ def generate_qa_pairs(playlist_id: str, n_pairs: int = 50) -> None:
         time.sleep(0.1)  # 1000 RPM allows minimal delays
 
     # ── Cross-video QA ────────────────────────────────────────────────────────
+    logger.info("Generating %d cross-video questions...", n_cross)
     for ca, cb in cross_pairs[:n_cross]:
-        qa = _generate_cross_video_qa(ca, cb)
+        # Find shared glossary terms
+        text_a = ca.get("text", "").lower()
+        text_b = cb.get("text", "").lower()
+        shared_terms = [
+            term for term in context.get("terms", [])
+            if term.lower() in text_a and term.lower() in text_b
+        ]
+        
+        qa = _generate_cross_video_qa(ca, cb, context, shared_terms)
         if qa:
             qa_rows.append(
                 {

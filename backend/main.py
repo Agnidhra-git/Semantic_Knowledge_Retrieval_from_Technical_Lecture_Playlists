@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
-from routers import playlists, videos, search, glossary, ingest, qa
+from routers import playlists, videos, search, glossary, ingest, qa, concept_journey, prerequisites
 
 settings = get_settings()
 
@@ -34,6 +34,8 @@ app.include_router(search.router, prefix="/search", tags=["search"])
 app.include_router(glossary.router, prefix="/glossary", tags=["glossary"])
 app.include_router(ingest.router, prefix="/ingest", tags=["ingest"])
 app.include_router(qa.router, prefix="/qa", tags=["qa"])
+app.include_router(concept_journey.router, prefix="/concept-journey", tags=["concept-journey"])
+app.include_router(prerequisites.router, prefix="/prerequisites", tags=["prerequisites"])
 
 
 @app.get("/health", tags=["health"])

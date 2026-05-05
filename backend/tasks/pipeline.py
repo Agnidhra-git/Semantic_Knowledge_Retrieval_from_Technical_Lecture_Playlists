@@ -42,6 +42,8 @@ from services.embedder import embed_batch
 from services.glossary_builder import build_glossary
 from services.heatmap_builder import build_playlist_heatmap
 from services.qa_generator import generate_qa_pairs
+from services.concept_graph import build_concept_dependencies
+from services.equation_search import extract_equations_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +165,8 @@ def _process_single_video(
         chunk["centrality_score"] = meta["centrality_score"]
         chunk["main_concept"] = meta.get("main_concept", "")
         chunk["term_density_score"] = _compute_term_density(chunk["text"])
+        # Extract equations from chunk text
+        chunk["equations"] = extract_equations_from_text(chunk["text"])
         enriched_chunks.append(chunk)
 
     # ── f. Embed chunks ───────────────────────────────────────────────────────
@@ -188,7 +192,9 @@ def _process_single_video(
             "concept_depth_score": chunk["concept_depth_score"],
             "term_density_score": chunk["term_density_score"],
             "centrality_score": chunk["centrality_score"],
+            "equations": chunk.get("equations", []),
             "pinecone_id": pinecone_id,
+            "sentence_boundaries": chunk.get("sentence_boundaries", []),
         }
         try:
             supabase.table("transcript_chunks").upsert(
@@ -376,6 +382,10 @@ def process_playlist(playlist_id: str) -> None:
         # ── 5. Glossary ───────────────────────────────────────────────────────
         logger.info("Building glossary for playlist %s", playlist_id)
         build_glossary(playlist_id)
+
+        # ── 5b. Concept Dependencies ──────────────────────────────────────────
+        logger.info("Building concept dependency graph for playlist %s", playlist_id)
+        build_concept_dependencies(playlist_id)
 
         # ── 6. Heatmaps ───────────────────────────────────────────────────────
         logger.info("Building heatmaps for playlist %s", playlist_id)

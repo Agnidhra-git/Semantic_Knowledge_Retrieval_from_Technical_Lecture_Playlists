@@ -104,7 +104,9 @@ def chunk_transcript(segments: list[dict], video_id: str) -> list[dict]:
     """
     Semantically chunk a list of transcript segments.
     Returns list of chunks:
-      {text, start_time, end_time, chunk_index, video_id}
+      {text, start_time, end_time, chunk_index, video_id, sentence_boundaries}
+    
+    sentence_boundaries: List of {text, start, end} for fine-grained timestamp precision
     """
     sentences = _build_sentences(segments)
     if not sentences:
@@ -115,17 +117,25 @@ def chunk_transcript(segments: list[dict], video_id: str) -> list[dict]:
 
     # Seed the first chunk with the first sentence
     cur_texts: list[str] = [sentences[0]["text"]]
+    cur_sentences: list[dict] = [
+        {
+            "text": sentences[0]["text"],
+            "start": sentences[0]["start_time"],
+            "end": sentences[0]["end_time"],
+        }
+    ]
     cur_start: float = sentences[0]["start_time"]
     cur_end: float = sentences[0]["end_time"]
     cur_dur: float = sentences[0]["duration"]
 
-    def _flush(texts: list[str], start: float, end: float, idx: int) -> dict:
+    def _flush(texts: list[str], sents: list[dict], start: float, end: float, idx: int) -> dict:
         return {
             "text": " ".join(texts),
             "start_time": start,
             "end_time": end,
             "chunk_index": idx,
             "video_id": video_id,
+            "sentence_boundaries": sents,
         }
 
     for sent in sentences[1:]:
@@ -135,9 +145,16 @@ def chunk_transcript(segments: list[dict], video_id: str) -> list[dict]:
 
         # Force flush at hard max regardless of overlap
         if new_dur > _CHUNK_MAX:
-            chunks.append(_flush(cur_texts, cur_start, cur_end, chunk_idx))
+            chunks.append(_flush(cur_texts, cur_sentences, cur_start, cur_end, chunk_idx))
             chunk_idx += 1
             cur_texts = [sent["text"]]
+            cur_sentences = [
+                {
+                    "text": sent["text"],
+                    "start": sent["start_time"],
+                    "end": sent["end_time"],
+                }
+            ]
             cur_start = sent["start_time"]
             cur_end = sent["end_time"]
             cur_dur = sent["duration"]
@@ -145,20 +162,34 @@ def chunk_transcript(segments: list[dict], video_id: str) -> list[dict]:
 
         if cur_dur >= _CHUNK_MIN and not high_overlap:
             # Sufficient size and low overlap → start new chunk
-            chunks.append(_flush(cur_texts, cur_start, cur_end, chunk_idx))
+            chunks.append(_flush(cur_texts, cur_sentences, cur_start, cur_end, chunk_idx))
             chunk_idx += 1
             cur_texts = [sent["text"]]
+            cur_sentences = [
+                {
+                    "text": sent["text"],
+                    "start": sent["start_time"],
+                    "end": sent["end_time"],
+                }
+            ]
             cur_start = sent["start_time"]
             cur_end = sent["end_time"]
             cur_dur = sent["duration"]
         else:
             # Keep extending current chunk
             cur_texts.append(sent["text"])
+            cur_sentences.append(
+                {
+                    "text": sent["text"],
+                    "start": sent["start_time"],
+                    "end": sent["end_time"],
+                }
+            )
             cur_end = sent["end_time"]
             cur_dur = new_dur
 
     # Flush remaining
     if cur_texts:
-        chunks.append(_flush(cur_texts, cur_start, cur_end, chunk_idx))
+        chunks.append(_flush(cur_texts, cur_sentences, cur_start, cur_end, chunk_idx))
 
     return chunks
