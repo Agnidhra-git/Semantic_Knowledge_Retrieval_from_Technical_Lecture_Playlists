@@ -58,17 +58,35 @@ async def get_term(playlist_id: str, term: str):
     data = resp.data
 
     # Enrich with snippet texts for the three best chunks
-    def _fetch_snippet(chunk_id: str | None) -> str | None:
+    def _fetch_snippet(chunk_id: str | None) -> dict | None:
         if not chunk_id:
             return None
         chunk_resp = (
             supabase.table("transcript_chunks")
-            .select("text, start_time, end_time, pedagogy_role")
+            .select("text, start_time, end_time, pedagogy_role, video_id")
             .eq("id", chunk_id)
             .maybe_single()
             .execute()
         )
-        return chunk_resp.data if chunk_resp.data else None
+        if not chunk_resp.data:
+            return None
+        
+        chunk_data = chunk_resp.data
+        
+        # Fetch video data to get youtube_id and title
+        if chunk_data.get("video_id"):
+            vid_resp = (
+                supabase.table("videos")
+                .select("youtube_id, title")
+                .eq("id", chunk_data["video_id"])
+                .maybe_single()
+                .execute()
+            )
+            if vid_resp.data:
+                chunk_data["video_youtube_id"] = vid_resp.data["youtube_id"]
+                chunk_data["video_title"] = vid_resp.data["title"]
+        
+        return chunk_data
 
     data["best_intro_chunk"] = _fetch_snippet(data.get("best_intro_chunk_id"))
     data["best_deriv_chunk"] = _fetch_snippet(data.get("best_deriv_chunk_id"))

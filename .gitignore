@@ -1,0 +1,42 @@
+# Root level exclusions
+demo_speech.txt
+frontend_complete.js
+*.txt
+cookies.txt
+
+# Report folder (LaTeX documents)
+report/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
